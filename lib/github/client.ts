@@ -44,6 +44,9 @@ function parseLinkNext(linkHeader: string | null): string | null {
 }
 
 export class GithubClient {
+  /** Pass an empty string for unauthenticated calls (public data only, much
+   *  lower rate limit) — e.g. the ecosystem PR-discovery job, which isn't
+   *  tied to any signed-in user. See lib/pr-reviews/discovery.ts. */
   constructor(private readonly accessToken: string) {}
 
   async request<T>(pathOrUrl: string, options: RequestOptions = {}): Promise<T> {
@@ -56,7 +59,7 @@ export class GithubClient {
         method: options.method ?? "GET",
         headers: {
           Accept: options.accept ?? "application/vnd.github+json",
-          Authorization: `Bearer ${this.accessToken}`,
+          ...(this.accessToken ? { Authorization: `Bearer ${this.accessToken}` } : {}),
           "User-Agent": GITHUB_USER_AGENT,
           "X-GitHub-Api-Version": "2022-11-28",
           ...(options.body ? { "Content-Type": "application/json" } : {}),
@@ -242,6 +245,11 @@ export class GithubClient {
           }
         }
 
+        // Without this, a rate-limited run just sits there for up to 60s per
+        // attempt with no output at all — indistinguishable from a hang.
+        console.warn(
+          `[github-client] retrying after ${error.message} — waiting ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1}/${attempts})`,
+        );
         await sleep(waitMs);
       }
     }

@@ -287,6 +287,127 @@ export async function fetchReviewedPullRequests(
   });
 }
 
+export type DiscoveredPullRequest = {
+  githubId: number;
+  number: number;
+  title: string;
+  htmlUrl: string;
+  authorLogin: string;
+  repoFullName: string;
+  githubCreatedAt: string;
+};
+
+/**
+ * Finds open, non-draft PRs with zero reviews yet in a specific repo — the
+ * seed data for the PR review discovery dashboard's auto-discovery job
+ * (lib/pr-reviews/discovery.ts). Unlike every other search in this file,
+ * this isn't scoped to any connected Pull user — `client` may be built with
+ * an empty token (unauthenticated, lower rate limit) since this runs on a
+ * schedule, not on behalf of a signed-in user.
+ */
+export async function fetchRepoPullRequestsNeedingReview(
+  client: GithubClient,
+  repoFullName: string,
+  limit: number,
+): Promise<DiscoveredPullRequest[]> {
+  const data = await client.request<SearchResponse>(
+    `/search/issues?q=${encodeURIComponent(`repo:${repoFullName} type:pr is:open draft:false review:none`)}&sort=created&order=asc&per_page=${limit}`,
+  );
+
+  return data.items.map((item) => ({
+    githubId: item.id,
+    number: item.number,
+    title: item.title,
+    htmlUrl: item.html_url,
+    authorLogin: item.user?.login ?? "",
+    repoFullName,
+    githubCreatedAt: item.created_at,
+  }));
+}
+
+type ArbitraryPullRequestDetail = {
+  number: number;
+  title: string;
+  html_url: string;
+  state: string;
+  merged: boolean;
+  user: { login: string } | null;
+  created_at: string;
+  additions: number;
+  deletions: number;
+  changed_files: number;
+};
+
+export type FetchedPullRequest = {
+  number: number;
+  title: string;
+  htmlUrl: string;
+  state: string;
+  merged: boolean;
+  authorLogin: string;
+  githubCreatedAt: string;
+  additions: number;
+  deletions: number;
+  filesChanged: number;
+};
+
+/**
+ * Fetches a single PR by owner/repo/number — unlike every other function in
+ * this file, not scoped to any connected Pull user's own authored/reviewed
+ * PRs. Used by the PR review discovery dashboard (lib/pr-reviews/) to look
+ * up a PR a builder pasted a URL for, which Pull may never have seen before.
+ */
+export async function fetchPullRequestByUrl(
+  client: GithubClient,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<FetchedPullRequest> {
+  const detail = await client.request<ArbitraryPullRequestDetail>(
+    `/repos/${owner}/${repo}/pulls/${number}`,
+  );
+
+  return {
+    number: detail.number,
+    title: detail.title,
+    htmlUrl: detail.html_url,
+    state: detail.state,
+    merged: detail.merged,
+    authorLogin: detail.user?.login ?? "",
+    githubCreatedAt: detail.created_at,
+    additions: detail.additions,
+    deletions: detail.deletions,
+    filesChanged: detail.changed_files,
+  };
+}
+
+type PullRequestReview = {
+  user: { login: string } | null;
+  state: string;
+};
+
+/**
+ * Whether `login` has left an actual review (any state — approved, changes
+ * requested, or just a formal "commented" review counts) on this PR. Used
+ * by the "I reviewed this" self-report button: a manual fallback for when
+ * the passive credit-detection in lib/github/sync.ts hasn't (yet, or ever)
+ * picked up the review on its own — see that file's docs on why it can miss
+ * one. Re-checks GitHub directly rather than trusting the click.
+ */
+export async function hasReviewedPullRequest(
+  client: GithubClient,
+  owner: string,
+  repo: string,
+  number: number,
+  login: string,
+): Promise<boolean> {
+  const reviews = await client.request<PullRequestReview[]>(
+    `/repos/${owner}/${repo}/pulls/${number}/reviews?per_page=100`,
+  );
+  const target = login.toLowerCase();
+  return reviews.some((review) => review.user?.login?.toLowerCase() === target);
+}
+
 export async function fetchAuthoredIssues(client: GithubClient, login: string) {
   const data = await client.request<SearchResponse>(
     `/search/issues?q=${encodeURIComponent(`author:${login} type:issue`)}&sort=updated&order=desc&per_page=${GITHUB_ACTIVITY_LIMIT}`,

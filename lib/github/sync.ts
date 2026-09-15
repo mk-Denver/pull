@@ -37,6 +37,7 @@ import {
 import { isPracticeRepoFullName } from "@/lib/first-contribution/practice-repo";
 import { derivePrMilestoneCandidates } from "@/lib/milestones/pr-signals";
 import { recordMilestones } from "@/lib/milestones/service";
+import { markReviewedByMatch } from "@/lib/pr-reviews/repository";
 import type { GithubSyncSummary } from "@/types/github";
 
 export type SyncGithubResult =
@@ -232,6 +233,15 @@ export async function syncGithubForUser(
     await replaceGithubRepositories(userId, mappedRepos);
     await replaceGithubIssues(userId, issues);
     await replaceGithubReviewedPullRequests(userId, reviewedPullRequests);
+
+    // Credit-detection loop for the PR review discovery dashboard: this
+    // user's own review sync just refreshed, so cross-reference it against
+    // any open review requests. Rides the existing sync rather than adding
+    // a separate poller — see lib/pr-reviews/repository.ts.
+    for (const reviewed of reviewedPullRequests) {
+      await markReviewedByMatch(reviewed.repoFullName, reviewed.number, userId);
+    }
+
     await replaceGithubCommits(userId, commits);
     await replaceGithubContributionDays(userId, contributionDays);
 
@@ -271,7 +281,15 @@ export async function syncGithubForUser(
           ? error.message
           : "GitHub sync failed";
 
-    await setGithubSyncStatus(userId, "error", message);
-    return { ok: false, error: message };
+    // For a Drizzle query failure, `message` is just "Failed query: <sql>" —
+    // the actual Postgres reason (e.g. a real constraint/type error) lives
+    // on `cause`, which was previously discarded, making the admin panel's
+    // sync-error display uninformative for exactly the errors worth seeing.
+    const cause =
+      error instanceof Error && error.cause instanceof Error ? error.cause.message : null;
+    const storedMessage = cause ? `${message} | cause: ${cause}` : message;
+
+    await setGithubSyncStatus(userId, "error", storedMessage);
+    return { ok: false, error: storedMessage };
   }
 }

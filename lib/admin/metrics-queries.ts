@@ -20,6 +20,8 @@ import {
   userRoadmapProgress,
   users,
 } from "@/lib/db/schema";
+import { canonicalChapterQuizFilter } from "@/lib/progress/quiz-repository";
+import { canonicalRoadmapProgressFilter } from "@/lib/progress/repository";
 import { REVIEW_QUEUE_STATUSES } from "@/types/submission";
 
 import { isAdminDemoUsername } from "./demo-accounts";
@@ -39,7 +41,10 @@ export async function countDistinctLessonCompleters(
 ): Promise<number> {
   return withDbRetry(async () => {
     const db = getDb();
-    const conditions = [eq(userRoadmapProgress.status, "completed")];
+    const conditions = [
+      eq(userRoadmapProgress.status, "completed"),
+      canonicalRoadmapProgressFilter(),
+    ];
     if (since) {
       conditions.push(gte(userRoadmapProgress.completedAt, since));
     }
@@ -58,7 +63,10 @@ export async function countDistinctLessonCompleters(
 export async function countDistinctQuizPassers(since?: string | null): Promise<number> {
   return withDbRetry(async () => {
     const db = getDb();
-    const conditions = [eq(userChapterQuizzes.status, "passed")];
+    const conditions = [
+      eq(userChapterQuizzes.status, "passed"),
+      canonicalChapterQuizFilter(),
+    ];
     if (since) {
       conditions.push(gte(userChapterQuizzes.completedAt, since));
     }
@@ -198,7 +206,16 @@ export async function fetchCronSyncHealth() {
       recentErrors: errorRows
         .map((row) => row.syncError)
         .filter((value): value is string => Boolean(value))
-        .map((value) => value.slice(0, 180)),
+        .map((value) => {
+          // "<message> | cause: <cause>" (see lib/github/sync.ts) — the cause
+          // is the actually-useful part for a Drizzle query failure, where
+          // <message> alone is just the SQL text. Truncate the message
+          // instead of the whole string so a long query never crowds out
+          // the reason it failed.
+          const [message, cause] = value.split(" | cause: ");
+          if (!cause) return value.slice(0, 180);
+          return `${message.slice(0, 80)}… | cause: ${cause.slice(0, 180)}`;
+        }),
     };
   });
 }
@@ -214,7 +231,12 @@ export async function fetchLessonDropOff(limit = 10) {
         completed: sql<number>`count(distinct ${userRoadmapProgress.userId})::int`,
       })
       .from(userRoadmapProgress)
-      .where(eq(userRoadmapProgress.status, "completed"))
+      .where(
+        and(
+          eq(userRoadmapProgress.status, "completed"),
+          canonicalRoadmapProgressFilter(),
+        ),
+      )
       .groupBy(userRoadmapProgress.roadmapSlug, userRoadmapProgress.nodeSlug)
       .orderBy(sql`count(distinct ${userRoadmapProgress.userId}) asc`)
       .limit(limit);
